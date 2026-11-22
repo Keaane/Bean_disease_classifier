@@ -20,12 +20,6 @@ import sys
 import tempfile
 import time
 
-# Keep TensorFlow lean before it is imported by src modules.
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "1")
-os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
-
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -131,14 +125,6 @@ def on_startup():
     os.makedirs(MODEL_DIR, exist_ok=True)
     for class_name in CLASS_NAMES:
         os.makedirs(os.path.join(DATA_TRAIN_DIR, class_name), exist_ok=True)
-
-    try:
-        import tensorflow as tf
-
-        tf.config.threading.set_inter_op_parallelism_threads(1)
-        tf.config.threading.set_intra_op_parallelism_threads(1)
-    except Exception:
-        pass
 
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "..", "ui")

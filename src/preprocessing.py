@@ -143,6 +143,8 @@ def preprocess_image(image, label=None, augment=False):
         image = tf.image.random_flip_up_down(image)
         image = tf.image.random_brightness(image, max_delta=0.15)
         image = tf.image.random_contrast(image, lower=0.85, upper=1.15)
+        # Brightness/contrast can push pixels outside [0, 1].
+        image = tf.clip_by_value(image, 0.0, 1.0)
 
     if label is None:
         return image

@@ -4,6 +4,10 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PORT=8000
+      - OMP_NUM_THREADS=1
+      - TF_NUM_INTRAOP_THREADS=1
+      - TF_NUM_INTEROP_THREADS=1
+      - TF_CPP_MIN_LOG_LEVEL=2
     # No host ports: traffic goes through nginx only.
     expose:
       - "8000"

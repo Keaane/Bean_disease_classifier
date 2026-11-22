@@ -12,18 +12,13 @@ COPY ui/ ./ui/
 COPY models/ ./models/
 COPY data/ ./data/
 COPY entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh && \
-    # Seed copies used on first boot when a Render disk is empty.
-    mkdir -p /app/seed/models /app/seed/data && \
-    cp -a /app/models/. /app/seed/models/ && \
-    cp -a /app/data/. /app/seed/data/
+RUN chmod +x ./entrypoint.sh
 
 WORKDIR /app/api
 
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
-# Default local paths; overridden on Render when /var/data exists (see entrypoint).
-ENV BEAN_DATA_ROOT=/app
+# Model and training data paths inside the container.
 ENV BEAN_MODEL_DIR=/app/models
 ENV BEAN_TRAIN_DIR=/app/data/train
 
