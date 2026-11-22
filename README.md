@@ -30,7 +30,7 @@ bean-disease-classifier/
 ├── README.md
 ├── requirements.txt
 ├── Dockerfile
-├── entrypoint.sh             # binds to $PORT; seeds Render disk if present
+├── entrypoint.sh             # starts uvicorn on $PORT
 ├── render.yaml               # Render Blueprint (free plan)
 ├── requirements-docker.txt   # slim API image deps (no Locust/notebook stack)
 ├── docker-compose.yml
@@ -50,7 +50,8 @@ bean-disease-classifier/
 │   ├── main.py                 # FastAPI (predict / upload / retrain / status)
 │   └── database.py             # SQLite logging
 ├── ui/
-│   └── index.html               # monitoring + prediction + retraining dashboard
+│   ├── index.html               # monitoring + prediction + retraining dashboard
+│   └── img/                     # exploration plots saved by the notebook (Data tab)
 ├── sample_images/
 │   ├── predict/                 # one sample leaf per class for manual demos
 │   └── retrain/                 # a few extras for upload/retrain demos
@@ -61,10 +62,10 @@ bean-disease-classifier/
 
 ## Setup
 
-> **First-time note:** `data/train` and `data/test` start empty. Run the
-> notebook (step 1) once so it downloads iBean and exports images into those
-> folders. Without that (or a bulk upload via the UI), `/retrain` refuses to
-> run because it needs at least 20 training images.
+> **Note:** `data/train` and `data/test` are already in the repo.
+> `data/train` holds the iBean train and validation splits, and `data/test`
+> holds the iBean test split. The API can predict and retrain straight away;
+> you only need the notebook to retrain the model from scratch.
 
 ### 1. Notebook (train the model)
 
@@ -72,6 +73,11 @@ The notebook downloads the dataset from Hugging Face, so it needs normal
 internet access. Prefer
 [Google Colab](https://colab.research.google.com/)
 (Runtime → Change runtime type → GPU recommended, not required).
+
+The first code cell sets up Colab. If it detects Colab, it clones this repo
+into `/content/Bean_disease_classifier` and changes into its `notebook/`
+folder, so the `../src` imports and `../data` paths work the same as they do
+locally. When run locally, the cell does nothing.
 
 ```bash
 # If running locally instead of Colab:
@@ -103,10 +109,11 @@ Upload & retrain). Swagger docs: `http://localhost:8000/docs`.
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/status` | Uptime, model version, prediction/upload stats, retrain history |
+| GET | `/status` | Uptime, model version, prediction/upload stats, retrain history. Also `uploads_since_last_retrain` and `retrain_recommended` (true once that count reaches `RETRAIN_THRESHOLD`, default 10) |
 | POST | `/predict` | Upload one image (`file`) → class + confidence |
-| POST | `/upload-data/{class_name}` | Bulk-upload images (`files`) for a class. `class_name` must be `angular_leaf_spot`, `bean_rust`, or `healthy` |
-| POST | `/retrain?epochs=5` | Retrain on current `data/train` (original + uploaded images) |
+| POST | `/upload-data/{class_name}` | Bulk-upload images (`files`) for a class. `class_name` must be `angular_leaf_spot`, `bean_rust`, or `healthy`. Files that are not valid images are skipped and listed in `rejected` |
+| POST | `/retrain?epochs=5` | Retrain on current `data/train` (original + uploaded images). The old and new models are scored on a fixed `data/test` subset; returns `old_test_accuracy`, `new_test_accuracy`, and `promoted` (the new model is kept only if it scores at least as well) |
+| GET | `/uploads` | The 50 most recent uploads (class, filename, time) |
 | GET | `/visualizations/class-distribution` | Image counts per class |
 
 Uploads and predictions are logged to SQLite (`api/app_data.db`) for the
@@ -130,8 +137,10 @@ One Docker web service (API + UI). Render does not run
 `docker-compose --scale`; paid plans use "multiple instances" instead. For
 this assignment, one instance is enough.
 
-`render.yaml` uses the Free plan (512 MB). Expect cold starts after idle,
-and possible OOM under heavy load or retrain. That is fine for a demo URL.
+`render.yaml` uses the Free plan (512 MB). The free tier sleeps when idle,
+so the first load after a quiet spell takes about a minute while it wakes
+up. Heavy load or retraining can also run out of memory. That is fine for a
+demo URL.
 
 1. Push this repo to GitHub (include `models/bean_model_latest.h5` and `data/`).
 2. In the [Render Dashboard](https://dashboard.render.com) → **New** →
@@ -143,7 +152,7 @@ and possible OOM under heavy load or retrain. That is fine for a demo URL.
 6. Keep that URL on the Live API/UI line at the top of this README.
 
 `entrypoint.sh` binds uvicorn to Render's `$PORT`. On Free, uploads and
-retrains reset when the instance cycles (no persistent disk).
+retrains reset whenever the instance restarts or redeploys.
 
 Local smoke test of the Render-style start:
 
