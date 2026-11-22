@@ -198,24 +198,28 @@ Notebook evaluation on the held-out iBean test set (128 images):
 
 | Metric | Value |
 |---|---|
-| Accuracy | 89.8% |
-| Macro precision | 0.914 |
-| Macro recall | 0.899 |
-| Macro F1 | 0.898 |
+| Accuracy | 88.3% |
+| Test loss | 0.219 |
+| Macro precision | 0.888 |
+| Macro recall | 0.883 |
+| Macro F1 | 0.882 |
 
 Per-class breakdown:
 
-| Class | Precision | Recall | F1 |
-|---|---|---|---|
-| Angular Leaf Spot | 0.796 | 1.000 | 0.887 |
-| Bean Rust | 0.970 | 0.744 | 0.842 |
-| Healthy | 0.976 | 0.952 | 0.964 |
+| Class | Precision | Recall | F1 | ROC-AUC |
+|---|---|---|---|---|
+| Angular Leaf Spot | 0.820 | 0.954 | 0.882 | 0.990 |
+| Bean Rust | 0.892 | 0.767 | 0.825 | 0.977 |
+| Healthy | 0.951 | 0.929 | 0.940 | 0.996 |
 
-The model never misses a real Angular Leaf Spot case (perfect recall) but
-sometimes over-predicts it, which hurts Bean Rust recall. Most mistakes sit
-between those two look-alike diseases; Healthy is classified reliably. For a
-disease alert tool that tradeoff is acceptable: a false alarm beats a missed
-outbreak.
+The confusion matrix shows the main error: 8 of 43 bean rust leaves were
+predicted as angular leaf spot. Both diseases start as small brown spots, so
+they are easy to mix up. Angular leaf spot is rarely missed, so the model
+leans toward raising a disease alert rather than missing one. For a farmer,
+that is the safer mistake. Healthy leaves are classified reliably.
+
+Retrain demo: continuing training from the saved model on stand-in new data
+raised test accuracy from 88.3% to 89.8%.
 
 Confusion matrix, ROC curves, and training curves are in the notebook
 (Section 5).
