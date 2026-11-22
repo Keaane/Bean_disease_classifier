@@ -22,8 +22,10 @@ import os
 
 from locust import HttpUser, task, between
 
-# Prefer a real leaf JPEG next to this file (no Pillow required).
-_SAMPLE = os.path.join(os.path.dirname(__file__), "sample_leaf.jpg")
+# A real bean leaf JPEG from the repo's sample images.
+_SAMPLE = os.path.join(
+    os.path.dirname(__file__), "..", "sample_images", "predict", "bean_rust", "sample.jpg"
+)
 with open(_SAMPLE, "rb") as _f:
     _LEAF_BYTES = _f.read()
 
