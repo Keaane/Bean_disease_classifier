@@ -48,7 +48,10 @@ def init_db() -> None:
                 epochs INTEGER NOT NULL,
                 final_val_accuracy REAL,
                 model_version TEXT,
-                timestamp REAL NOT NULL
+                timestamp REAL NOT NULL,
+                old_test_accuracy REAL,
+                new_test_accuracy REAL,
+                promoted INTEGER
             );
             """
         )
@@ -86,14 +89,18 @@ def log_retrain_event(
     epochs: int,
     final_val_accuracy: float | None,
     model_version: str,
+    old_test_accuracy: float | None,
+    new_test_accuracy: float,
+    promoted: bool,
 ) -> None:
     conn = _connect()
     try:
         conn.execute(
             """
             INSERT INTO retrain_events
-                (num_new_images, epochs, final_val_accuracy, model_version, timestamp)
-            VALUES (?, ?, ?, ?, ?)
+                (num_new_images, epochs, final_val_accuracy, model_version, timestamp,
+                 old_test_accuracy, new_test_accuracy, promoted)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(num_new_images),
@@ -101,6 +108,9 @@ def log_retrain_event(
                 final_val_accuracy,
                 model_version,
                 time.time(),
+                old_test_accuracy,
+                new_test_accuracy,
+                int(promoted),
             ),
         )
         conn.commit()
@@ -172,7 +182,8 @@ def get_retrain_history() -> list[dict[str, Any]]:
     try:
         rows = conn.execute(
             """
-            SELECT num_new_images, epochs, final_val_accuracy, model_version, timestamp
+            SELECT num_new_images, epochs, final_val_accuracy, model_version, timestamp,
+                   old_test_accuracy, new_test_accuracy, promoted
             FROM retrain_events
             ORDER BY timestamp DESC
             LIMIT 50
@@ -184,6 +195,48 @@ def get_retrain_history() -> list[dict[str, Any]]:
                 "epochs": row["epochs"],
                 "final_val_accuracy": row["final_val_accuracy"],
                 "model_version": row["model_version"],
+                "timestamp": row["timestamp"],
+                "old_test_accuracy": row["old_test_accuracy"],
+                "new_test_accuracy": row["new_test_accuracy"],
+                "promoted": None if row["promoted"] is None else bool(row["promoted"]),
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def count_uploads_since_last_retrain() -> int:
+    conn = _connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM uploads
+            WHERE timestamp > COALESCE((SELECT MAX(timestamp) FROM retrain_events), 0)
+            """
+        ).fetchone()
+        return row["n"]
+    finally:
+        conn.close()
+
+
+def get_recent_uploads(limit: int = 50) -> list[dict[str, Any]]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT class_name, filename, timestamp
+            FROM uploads
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "class_name": row["class_name"],
+                "filename": row["filename"],
                 "timestamp": row["timestamp"],
             }
             for row in rows

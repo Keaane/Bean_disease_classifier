@@ -6,6 +6,7 @@ Endpoints:
   POST /predict
   POST /upload-data/{class_name}
   POST /retrain
+  GET  /uploads
   GET  /visualizations/class-distribution
 
 Run locally:
@@ -28,6 +29,7 @@ os.environ.setdefault("TF_NUM_INTEROP_THREADS", "1")
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+import tensorflow as tf
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -36,6 +38,7 @@ from preprocessing import (  # noqa: E402
     load_dataset_from_directory,
     build_pipeline,
     prepare_retrain_subset,
+    preprocess_image,
 )
 from model import retrain_model  # noqa: E402
 from prediction import predict_image, clear_model_cache  # noqa: E402
@@ -48,6 +51,7 @@ _DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
 _DEFAULT_TRAIN_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "train")
 MODEL_DIR = os.environ.get("BEAN_MODEL_DIR", _DEFAULT_MODEL_DIR)
 DATA_TRAIN_DIR = os.environ.get("BEAN_TRAIN_DIR", _DEFAULT_TRAIN_DIR)
+DATA_TEST_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "test")
 MODEL_PATH = os.path.join(MODEL_DIR, "bean_model_latest.h5")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"}
 
@@ -55,6 +59,11 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"}
 RETRAIN_MAX_PER_CLASS = int(os.environ.get("RETRAIN_MAX_PER_CLASS", "12"))
 RETRAIN_BATCH_SIZE = int(os.environ.get("RETRAIN_BATCH_SIZE", "2"))
 RETRAIN_MAX_EPOCHS = int(os.environ.get("RETRAIN_MAX_EPOCHS", "2"))
+RETRAIN_THRESHOLD = int(os.environ.get("RETRAIN_THRESHOLD", "10"))
+
+# Fixed test subset used to compare the old and new model on /retrain.
+EVAL_IMAGES_PER_CLASS = 10
+EVAL_BATCH_SIZE = 8
 
 
 def _count_images(directory: str) -> int:
@@ -66,6 +75,40 @@ def _count_images(directory: str) -> int:
         for name in os.listdir(directory)
         if os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS
     )
+
+
+def _load_eval_subset():
+    """First EVAL_IMAGES_PER_CLASS test images per class, sorted by filename."""
+    paths, labels = [], []
+    for label, class_name in enumerate(CLASS_NAMES):
+        class_dir = os.path.join(DATA_TEST_DIR, class_name)
+        if not os.path.isdir(class_dir):
+            continue
+        names = sorted(
+            n for n in os.listdir(class_dir)
+            if os.path.splitext(n)[1].lower() in IMAGE_EXTENSIONS
+        )
+        for name in names[:EVAL_IMAGES_PER_CLASS]:
+            paths.append(os.path.join(class_dir, name))
+            labels.append(label)
+
+    def load(path, label):
+        raw = tf.io.read_file(path)
+        image = tf.io.decode_image(raw, channels=3, expand_animations=False)
+        return preprocess_image(image, label)
+
+    ds = tf.data.Dataset.from_tensor_slices((paths, tf.constant(labels, tf.int64)))
+    return ds.map(load).batch(EVAL_BATCH_SIZE)
+
+
+def _test_accuracy(model_path: str) -> float:
+    """Load a saved model, score it on the fixed test subset, then free it."""
+    model = tf.keras.models.load_model(model_path)
+    _, accuracy = model.evaluate(_load_eval_subset(), verbose=0)
+    del model
+    tf.keras.backend.clear_session()
+    gc.collect()
+    return float(accuracy)
 
 
 app = FastAPI(
@@ -109,20 +152,6 @@ def root():
     return {"service": "Bean Leaf Disease Classifier API", "docs": "/docs"}
 
 
-@app.get("/api")
-def api_info():
-    return {
-        "service": "Bean Leaf Disease Classifier API",
-        "endpoints": [
-            "/status",
-            "/predict",
-            "/upload-data/{class_name}",
-            "/retrain",
-            "/visualizations/class-distribution",
-        ],
-    }
-
-
 @app.get("/status")
 def status():
     """
@@ -140,6 +169,7 @@ def status():
     pred_stats = database.get_prediction_stats()
     upload_dist = database.get_upload_class_distribution()
     retrain_history = database.get_retrain_history()
+    uploads_since_retrain = database.count_uploads_since_last_retrain()
 
     return {
         "status": "up",
@@ -150,6 +180,8 @@ def status():
         "recent_predictions": pred_stats["recent"],
         "uploaded_images_by_class": upload_dist,
         "retrain_history": retrain_history,
+        "uploads_since_last_retrain": uploads_since_retrain,
+        "retrain_recommended": uploads_since_retrain >= RETRAIN_THRESHOLD,
     }
 
 
@@ -176,7 +208,8 @@ async def upload_data(class_name: str, files: list[UploadFile] = File(...)):
     """
     Bulk-uploads images for a given class, to be used in the next
     retraining run. Saves files to data/train/<class_name>/ and logs
-    each upload to the database.
+    each upload to the database. Files that are not valid images are
+    skipped and returned in "rejected".
     """
     if class_name not in CLASS_NAMES:
         raise HTTPException(
@@ -188,12 +221,22 @@ async def upload_data(class_name: str, files: list[UploadFile] = File(...)):
     os.makedirs(class_dir, exist_ok=True)
 
     saved = []
+    rejected = []
     for f in files:
+        # basename() drops any folder parts like "../" from the client's name.
+        original_name = os.path.basename(f.filename or "")
+        image_bytes = await f.read()
+        try:
+            tf.io.decode_image(image_bytes, channels=3, expand_animations=False)
+        except Exception:
+            rejected.append(original_name)
+            continue
+
         timestamp = int(time.time() * 1000)
-        safe_name = f"uploaded_{timestamp}_{f.filename}"
+        safe_name = f"uploaded_{timestamp}_{original_name}"
         dest_path = os.path.join(class_dir, safe_name)
         with open(dest_path, "wb") as out_file:
-            shutil.copyfileobj(f.file, out_file)
+            out_file.write(image_bytes)
         database.log_upload(class_name, safe_name)
         saved.append(safe_name)
 
@@ -201,6 +244,7 @@ async def upload_data(class_name: str, files: list[UploadFile] = File(...)):
         "class_name": class_name,
         "num_uploaded": len(saved),
         "filenames": saved,
+        "rejected": rejected,
     }
 
 
@@ -211,6 +255,9 @@ def retrain(epochs: int = 1):
 
     Uses a capped per-class subset (uploads preferred) so Free-tier
     Render (512 MB) does not OOM on the full training folder.
+
+    The old and new models are both scored on the same fixed test subset,
+    and the new model is only kept if it is at least as accurate.
     """
     total_images = sum(
         _count_images(os.path.join(DATA_TRAIN_DIR, c)) for c in CLASS_NAMES
@@ -242,6 +289,14 @@ def retrain(epochs: int = 1):
                 detail=f"Retrain subset too small ({subset_total} images).",
             )
 
+        # Score the current model and keep a backup in case the new one is worse.
+        # (done after prepare_retrain_subset, which clears work_dir)
+        old_test_accuracy = None
+        backup_path = os.path.join(work_dir, "previous_model.h5")
+        if os.path.exists(MODEL_PATH):
+            old_test_accuracy = _test_accuracy(MODEL_PATH)
+            shutil.copy2(MODEL_PATH, backup_path)
+
         train_raw, val_raw = load_dataset_from_directory(work_dir)
         train_ds = build_pipeline(
             train_raw,
@@ -265,6 +320,11 @@ def retrain(epochs: int = 1):
             epochs=epochs,
             lightweight=True,
         )
+
+        new_test_accuracy = _test_accuracy(latest_path)
+        promoted = old_test_accuracy is None or new_test_accuracy >= old_test_accuracy
+        if not promoted:
+            shutil.copy2(backup_path, MODEL_PATH)
     except HTTPException:
         raise
     except Exception as e:
@@ -290,12 +350,18 @@ def retrain(epochs: int = 1):
         epochs=epochs,
         final_val_accuracy=final_val_accuracy,
         model_version=os.path.basename(versioned_path),
+        old_test_accuracy=old_test_accuracy,
+        new_test_accuracy=new_test_accuracy,
+        promoted=promoted,
     )
 
     return {
         "status": "retrained",
         "model_version": os.path.basename(versioned_path),
         "final_val_accuracy": final_val_accuracy,
+        "old_test_accuracy": old_test_accuracy,
+        "new_test_accuracy": new_test_accuracy,
+        "promoted": promoted,
         "trained_on_images": subset_total,
         "subset_by_class": selected,
         "note": (
@@ -303,6 +369,12 @@ def retrain(epochs: int = 1):
             "Uploaded images are preferred."
         ),
     }
+
+
+@app.get("/uploads")
+def recent_uploads():
+    """The 50 most recent uploads (class, filename, timestamp), newest first."""
+    return database.get_recent_uploads(limit=50)
 
 
 @app.get("/visualizations/class-distribution")
