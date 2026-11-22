@@ -23,6 +23,7 @@ import time
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import tensorflow as tf
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -128,6 +129,8 @@ def on_startup():
 
 
 UI_DIR = os.path.join(os.path.dirname(__file__), "..", "ui")
+# Serves the notebook plots in ui/img/ to the Data tab.
+app.mount("/ui", StaticFiles(directory=UI_DIR), name="ui")
 
 
 @app.get("/")
