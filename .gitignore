@@ -25,3 +25,6 @@ models/bean_model_2*.h5
 
 # Local tooling
 .tools/
+
+# Notebook retrain demo output
+models/retrain_demo/
