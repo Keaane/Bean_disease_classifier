@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Slimmer runtime deps (no Locust / notebook stack) → faster builds, less RAM.
 COPY requirements-docker.txt .
-RUN pip install --no-cache-dir -r requirements-docker.txt
+RUN pip install --no-cache-dir --default-timeout=300 --retries 10 -r requirements-docker.txt
 
 COPY src/ ./src/
 COPY api/ ./api/
